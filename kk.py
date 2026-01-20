@@ -1,18 +1,20 @@
-# ULTRA GLOBAL ROBLOX CHAT SERVER FOR RENDER
+# ULTRA GLOBAL ROBLOX CHAT SERVER (HTTP API)
 # OWNER: xxxxxthefox
-# ⚡ WebSocket + Rooms + Anti-Spam + Anti-Swear + Logging
+# ⚡ FastAPI + Rooms + Anti-Spam + Anti-Swear + Logging
 
-import asyncio, websockets, json, time, re
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+import asyncio, time, re
 from collections import defaultdict, deque
-from http import HTTPStatus
+import uvicorn
 
-HOST = "0.0.0.0"
-PORT = 8765
+app = FastAPI()
 
-clients = {}                 # ws -> username
-rooms = defaultdict(set)    # room -> websockets
+# ================== DATA STRUCTURES ==================
+clients = defaultdict(list)  # room -> list of asyncio.Queue (for broadcasting)
+messages = defaultdict(list) # room -> list of messages
 history = defaultdict(lambda: deque(maxlen=10))
-mute = {}                   # user -> unmute_time
+mute = {}                     # user -> unmute_time
 
 # ================== CONFIG ==================
 MAX_MSG = 6
@@ -47,81 +49,75 @@ def muted(user):
 def clean(msg):
     return BAD_REGEX.sub("***", msg)
 
-# ================== IGNORE HTTP REQUESTS ==================
-async def ignore_http(path, request_headers):
-    # أي طلب HTTP عادي (GET/HEAD) يتم تجاهله وإرجاع 200
-    return HTTPStatus.OK, [], b"WebSocket server running\n"
+# ================== ENDPOINTS ==================
 
-# ================== MAIN HANDLER ==================
-async def handler(ws):
-    user, room = None, None
+@app.post("/send")
+async def send_message(data: dict):
+    username = data.get("username", "Unknown")
+    room = data.get("room", "global")
+    msg = data.get("message", "")
+
+    if muted(username):
+        return {"status":"error","message":"🔇 You are muted"}
+
+    if spam(username):
+        mute[username] = time.time() + MUTE_TIME
+        log(f"[SPAM] {username} in {room}")
+        return {"status":"error","message":"⛔ Spam detected, muted"}
+
+    if BAD_REGEX.search(msg):
+        msg = clean(msg)
+        mute[username] = time.time() + 10
+        log(f"[SWEAR] {username} in {room}")
+
+    # سجل الرسالة
+    messages[room].append({"username": username, "message": msg, "time": time.time()})
+    log(f"[{room}] {username}: {msg}")
+
+    # أرسل لكل العملاء المسجلين في الغرفة
+    for queue in clients[room]:
+        await queue.put({"username": username, "message": msg})
+
+    return {"status":"ok"}
+
+@app.get("/recv")
+async def recv_messages(room: str):
+    # جلب آخر 50 رسالة للغرفة
+    msgs = messages[room][-50:]
+    return {"messages": msgs}
+
+@app.websocket("/ws/{room}/{username}")
+async def websocket_endpoint(websocket, room: str, username: str):
+    import websockets
+    await websocket.accept()
+    queue = asyncio.Queue()
+    clients[room].append(queue)
+    log(f"[+] {username} connected to room {room}")
+
     try:
-        async for raw in ws:
-            try:
-                data = json.loads(raw)
-            except Exception:
-                continue  # تجاهل أي رسالة ليست JSON صحيحة
+        while True:
+            # تحقق إذا وصل أي رسالة جديدة للغرفة
+            done, _ = await asyncio.wait(
+                [queue.get(), websocket.receive_text()],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
 
-            t = data.get("type")
-            if t == "connect":
-                user = data["username"]
-                room = data["room"]
-                clients[ws] = user
-                rooms[room].add(ws)
-                log(f"[+] {user} joined {room}")
-                await ws.send(json.dumps({"type":"system","message":"Connected to Global Network"}))
-
-            elif t == "message":
-                msg = data["message"]
-
-                if muted(user):
-                    await ws.send(json.dumps({"type":"system","message":"🔇 You are muted"}))
-                    continue
-
-                if spam(user):
-                    mute[user] = time.time() + MUTE_TIME
-                    await ws.send(json.dumps({"type":"system","message":"⛔ Spam detected, muted"}))
-                    log(f"[SPAM] {user}")
-                    continue
-
-                if BAD_REGEX.search(msg):
-                    msg = clean(msg)
-                    mute[user] = time.time() + 10
-                    await ws.send(json.dumps({"type":"system","message":"🚫 Bad words blocked"}))
-                    log(f"[SWEAR] {user}")
-
-                payload = json.dumps({
-                    "type":"message",
-                    "username":user,
-                    "message":msg
-                })
-
-                for c in list(rooms[room]):
-                    if c.open:
-                        await c.send(payload)
-
-                log(f"[{room}] {user}: {msg}")
+            for task in done:
+                result = task.result()
+                if isinstance(result, str):
+                    # رسالة من العميل (يمكن تجاهلها أو إعادة إرسال)
+                    pass
+                else:
+                    # رسالة من السيرفر
+                    await websocket.send_json(result)
 
     except Exception as e:
-        log(f"[ERROR] {e}")
+        log(f"[ERROR] WebSocket {username}: {e}")
     finally:
-        if ws in clients:
-            log(f"[-] {clients[ws]} disconnected")
-            del clients[ws]
-        if room and ws in rooms[room]:
-            rooms[room].remove(ws)
+        clients[room].remove(queue)
+        log(f"[-] {username} disconnected from room {room}")
 
-# ================== START SERVER ==================
-async def main():
-    log("🚀 GLOBAL SERVER ONLINE (NO ENCRYPTION) FOR RENDER")
-    async with websockets.serve(
-        handler,
-        HOST,
-        PORT,
-        process_request=ignore_http,  # يتجاهل HEAD/HTTP requests
-        max_size=2**20
-    ):
-        await asyncio.Future()  # keep running
-
+# ================== RUN SERVER ==================
 if __name__ == "__main__":
-    asyncio.run(main())
+    log("🚀 GLOBAL HTTP API SERVER ONLINE FOR ROBLOX")
+    uvicorn.run(app, host="0.0.0.0", port=8765)
