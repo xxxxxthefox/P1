@@ -1,10 +1,10 @@
-# server.py
-# 🌌 ULTRA GLOBAL ROBLOX CHAT SERVER (NO ENCRYPTION)
-# 👑 OWNER: xxxxxthefox
-# ⚡ Anti-Spam | Anti-Swear (All Languages) | Rooms | Mute | Logs
+# ULTRA GLOBAL ROBLOX CHAT SERVER FOR RENDER
+# OWNER: xxxxxthefox
+# ⚡ WebSocket + Rooms + Anti-Spam + Anti-Swear + Logging
 
 import asyncio, websockets, json, time, re
 from collections import defaultdict, deque
+from http import HTTPStatus
 
 HOST = "0.0.0.0"
 PORT = 8765
@@ -47,20 +47,27 @@ def muted(user):
 def clean(msg):
     return BAD_REGEX.sub("***", msg)
 
+# ================== IGNORE HTTP REQUESTS ==================
+async def ignore_http(path, request_headers):
+    # أي طلب HTTP عادي (GET/HEAD) يتم تجاهله وإرجاع 200
+    return HTTPStatus.OK, [], b"WebSocket server running\n"
+
 # ================== MAIN HANDLER ==================
 async def handler(ws):
     user, room = None, None
     try:
         async for raw in ws:
-            data = json.loads(raw)
-            t = data.get("type")
+            try:
+                data = json.loads(raw)
+            except Exception:
+                continue  # تجاهل أي رسالة ليست JSON صحيحة
 
+            t = data.get("type")
             if t == "connect":
                 user = data["username"]
                 room = data["room"]
                 clients[ws] = user
                 rooms[room].add(ws)
-
                 log(f"[+] {user} joined {room}")
                 await ws.send(json.dumps({"type":"system","message":"Connected to Global Network"}))
 
@@ -95,8 +102,8 @@ async def handler(ws):
 
                 log(f"[{room}] {user}: {msg}")
 
-    except:
-        pass
+    except Exception as e:
+        log(f"[ERROR] {e}")
     finally:
         if ws in clients:
             log(f"[-] {clients[ws]} disconnected")
@@ -104,10 +111,17 @@ async def handler(ws):
         if room and ws in rooms[room]:
             rooms[room].remove(ws)
 
-# ================== START ==================
+# ================== START SERVER ==================
 async def main():
-    log("🚀 GLOBAL SERVER ONLINE (NO ENCRYPTION)")
-    async with websockets.serve(handler, HOST, PORT, max_size=2**20):
-        await asyncio.Future()
+    log("🚀 GLOBAL SERVER ONLINE (NO ENCRYPTION) FOR RENDER")
+    async with websockets.serve(
+        handler,
+        HOST,
+        PORT,
+        process_request=ignore_http,  # يتجاهل HEAD/HTTP requests
+        max_size=2**20
+    ):
+        await asyncio.Future()  # keep running
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
